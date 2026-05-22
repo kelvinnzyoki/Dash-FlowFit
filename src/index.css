@@ -1,0 +1,8 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a0f; }
+input[type=range] { accent-color: #f59e0b; }
+select option { background: #1a1a2e; color: #e5e7eb; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(245,158,11,0.3); border-radius: 3px; }
+@keyframes spin { to { transform: rotate(360deg); } }
