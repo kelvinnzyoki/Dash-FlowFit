@@ -3,7 +3,7 @@ import "./index.css";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ||
-  "https://fit.cctamcc.site";
+  "https://poster.cctamcc.site";
 
 const PROVIDERS = [
   { id: "FACEBOOK", label: "Facebook" },
