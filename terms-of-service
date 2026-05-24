@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Terms of Service | FlowFit Social Poster</title>
+
+<style>
+
+body{
+margin:0;
+font-family:Arial,sans-serif;
+background:#f8fafc;
+color:#111827;
+line-height:1.7;
+}
+
+.container{
+max-width:900px;
+margin:auto;
+padding:50px 25px;
+background:white;
+}
+
+h1,h2{
+color:#0f172a;
+}
+
+.small{
+color:#64748b;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>Terms of Service</h1>
+
+<p class="small">
+Effective Date: May 24, 2026
+</p>
+
+<p>
+These Terms govern use of FlowFit Social Poster.
+By using the service you agree to these terms.
+</p>
+
+<h2>Service Description</h2>
+
+<p>
+FlowFit Social Poster allows users to
+create, schedule and publish content
+across connected social media platforms.
+</p>
+
+<h2>User Responsibilities</h2>
+
+<ul>
+<li>Maintain account security</li>
+<li>Provide accurate information</li>
+<li>Use the service lawfully</li>
+<li>Follow social platform policies</li>
+</ul>
+
+<h2>Prohibited Activities</h2>
+
+<ul>
+<li>Spam</li>
+<li>Illegal content</li>
+<li>Harassment</li>
+<li>Uploading malware</li>
+<li>Abusing APIs</li>
+<li>Impersonation</li>
+</ul>
+
+<h2>Social Platform Connections</h2>
+
+<p>
+You authorize FlowFit to publish
+content and access approved permissions
+for connected social platforms.
+</p>
+
+<h2>Scheduled Publishing</h2>
+
+<p>
+Scheduled publishing may fail because
+of platform outages, expired tokens,
+network problems, invalid media,
+permission changes or API limitations.
+</p>
+
+<h2>Termination</h2>
+
+<p>
+FlowFit may suspend accounts for
+violating these terms or compromising
+security.
+</p>
+
+<h2>Limitation of Liability</h2>
+
+<p>
+FlowFit is provided "as is"
+without guarantees of uninterrupted
+operation or successful publishing.
+</p>
+
+<h2>Contact</h2>
+
+<p>
+Email:
+<a href="mailto: kelvinnzyokimaitha@gmail.com@gmail.com">
+kelvinnzyokimaitha@gmail.com
+</a>
+</p>
+
+</div>
+
+</body>
+</html>
