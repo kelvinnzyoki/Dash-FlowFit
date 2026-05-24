@@ -241,7 +241,7 @@ export default function App() {
             <input
               value={apiBase}
               onChange={(event) => setApiBase(event.target.value)}
-              placeholder="https://fit.cctamcc.site"
+              placeholder="https://poster.cctamcc.site"
             />
           </label>
 
