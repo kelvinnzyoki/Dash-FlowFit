@@ -12,13 +12,12 @@ const PROVIDERS = [
   { id: "X", label: "X" },
 ];
 
-function readStored(key, fallback = "") {
-  try {
-    return localStorage.getItem(key) || fallback;
-  } catch {
-    return fallback;
-  }
-}
+const DEFAULT_VARIANTS = {
+  FACEBOOK: "Train smarter at home with FlowFit. AI fitness, real results.",
+  INSTAGRAM: "Train smarter at home with FlowFit. AI fitness, real results. #FlowFit #HomeWorkout #FitnessApp",
+  LINKEDIN: "FlowFit helps people train smarter at home with structured workouts, progress tracking, and AI-powered coaching.",
+  X: "Train smarter at home with FlowFit. AI fitness, real results.",
+};
 
 function toDatetimeLocalValue(date = new Date(Date.now() + 10 * 60 * 1000)) {
   const offset = date.getTimezoneOffset();
@@ -50,36 +49,28 @@ async function parseResponse(response) {
 }
 
 export default function App() {
-  const [apiBase, setApiBase] = useState(() => readStored("flowfit.apiBase", API_BASE));
-  const [token, setToken] = useState(() => readStored("flowfit.jwt", ""));
-  const [providerStatus, setProviderStatus] = useState({});
-  const [posts, setPosts] = useState([]);
-  const [selectedProviders, setSelectedProviders] = useState(["FACEBOOK"]);
-  const [text, setText] = useState("Train smarter at home with FlowFit. AI fitness, real results.");
+  const [campaignBrief, setCampaignBrief] = useState(
+    "Promote FlowFit home workouts, AI coaching, progress tracking, and real fitness results."
+  );
+  const [variants, setVariants] = useState(DEFAULT_VARIANTS);
+  const [selectedProviders, setSelectedProviders] = useState(["FACEBOOK", "INSTAGRAM", "LINKEDIN", "X"]);
   const [scheduledAt, setScheduledAt] = useState(() => toDatetimeLocalValue());
   const [mediaFiles, setMediaFiles] = useState([]);
   const [mediaUrls, setMediaUrls] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [loadingPosts, setLoadingPosts] = useState(false);
+  const [posts, setPosts] = useState([]);
   const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
-  const authHeaders = useMemo(() => {
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }, [token]);
-
-  function persistSettings() {
-    localStorage.setItem("flowfit.apiBase", apiBase.replace(/\/$/, ""));
-    localStorage.setItem("flowfit.jwt", token.trim());
-    setNotice("Settings saved locally on this browser.");
-  }
+  const apiBase = useMemo(() => API_BASE, []);
 
   async function api(path, options = {}) {
-    const response = await fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
+    const response = await fetch(`${apiBase}${path}`, {
+      credentials: "include",
       ...options,
       headers: {
         ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-        ...authHeaders,
         ...(options.headers || {}),
       },
     });
@@ -87,45 +78,62 @@ export default function App() {
     return parseResponse(response);
   }
 
-  async function loadProviders() {
-    if (!token) {
-      setNotice("Paste a valid FlowFit bearer JWT to load connected providers.");
-      return;
-    }
-
-    try {
-      const data = await api("/api/social/providers");
-      setProviderStatus(data.providers || {});
-    } catch (error) {
-      setNotice(error.message);
-    }
-  }
-
   async function loadPosts() {
-    if (!token) return;
-
-    setLoadingPosts(true);
+    setLoading(true);
     try {
       const data = await api("/api/social/posts");
       setPosts(data.posts || []);
     } catch (error) {
       setNotice(error.message);
     } finally {
-      setLoadingPosts(false);
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (token) {
-      loadProviders();
-      loadPosts();
-    }
+    loadPosts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function toggleProvider(provider) {
+    setSelectedProviders((current) =>
+      current.includes(provider)
+        ? current.filter((item) => item !== provider)
+        : [...current, provider]
+    );
+  }
+
+  async function generatePosts() {
+    if (!campaignBrief.trim()) {
+      setNotice("Add a campaign brief first.");
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const data = await api("/api/social/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          brief: campaignBrief,
+          providers: selectedProviders,
+        }),
+      });
+
+      setVariants((current) => ({
+        ...current,
+        ...(data.variants || {}),
+      }));
+      setNotice("AI post variants generated.");
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   async function uploadSelectedMedia() {
     if (!mediaFiles.length) {
-      setNotice("Select at least one image/video first.");
+      setNotice("Select at least one image or video first.");
       return;
     }
 
@@ -148,13 +156,8 @@ export default function App() {
     }
   }
 
-  async function schedulePost(event) {
+  async function schedulePosts(event) {
     event.preventDefault();
-
-    if (!token) {
-      setNotice("Bearer JWT is required.");
-      return;
-    }
 
     if (!selectedProviders.length) {
       setNotice("Select at least one platform.");
@@ -162,34 +165,37 @@ export default function App() {
     }
 
     if (selectedProviders.includes("INSTAGRAM") && mediaUrls.length === 0) {
-      setNotice("Instagram publishing requires at least one uploaded image or video URL.");
+      setNotice("Instagram requires at least one uploaded media URL.");
       return;
     }
 
-    setSaving(true);
+    setLoading(true);
+
     try {
-      const payload = {
-        text,
-        providers: selectedProviders,
-        scheduledAt: new Date(scheduledAt).toISOString(),
-        mediaUrls,
-      };
+      for (const provider of selectedProviders) {
+        const text = variants[provider]?.trim();
 
-      await api("/api/social/posts", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+        if (!text) {
+          throw new Error(`${provider} post text is empty.`);
+        }
 
-      setNotice("Post scheduled successfully.");
-      setText("");
-      setMediaFiles([]);
-      setMediaUrls([]);
-      setScheduledAt(toDatetimeLocalValue());
+        await api("/api/social/posts", {
+          method: "POST",
+          body: JSON.stringify({
+            text,
+            providers: [provider],
+            scheduledAt: new Date(scheduledAt).toISOString(),
+            mediaUrls,
+          }),
+        });
+      }
+
+      setNotice("Posts scheduled through backend. Cron will publish them when due.");
       await loadPosts();
     } catch (error) {
       setNotice(error.message);
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   }
 
@@ -203,27 +209,16 @@ export default function App() {
     }
   }
 
-  function toggleProvider(provider) {
-    setSelectedProviders((current) =>
-      current.includes(provider)
-        ? current.filter((item) => item !== provider)
-        : [...current, provider]
-    );
-  }
-
   return (
     <main className="page-shell">
       <section className="hero-card">
-        <div>
-          <p className="eyebrow">FlowFit Marketing</p>
-          <h1>Social Poster Scheduler</h1>
-          <p className="hero-copy">
-            Create one campaign, upload media, choose platforms, schedule it, and let the protected backend cron publish due posts.
-          </p>
-        </div>
-
-        <button className="secondary-button" onClick={() => { loadProviders(); loadPosts(); }}>
-          Refresh
+        <p className="eyebrow">FlowFit Marketing</p>
+        <h1>Social Poster Scheduler</h1>
+        <p className="hero-copy">
+          Generate platform-specific marketing posts, upload media, schedule campaigns, and let the protected backend cron publish due posts.
+        </p>
+        <button className="secondary-button" onClick={loadPosts} disabled={loading}>
+          {loading ? "Refreshing..." : "Refresh"}
         </button>
       </section>
 
@@ -233,125 +228,106 @@ export default function App() {
         </div>
       )}
 
-      <section className="grid">
-        <aside className="panel">
-          <h2>Connection Settings</h2>
-          <label>
-            Backend API URL
-            <input
-              value={apiBase}
-              onChange={(event) => setApiBase(event.target.value)}
-              placeholder="https://poster.cctamcc.site"
-            />
-          </label>
+      <section className="panel">
+        <h2>AI Campaign Generator</h2>
 
-          <label>
-            User Bearer JWT
+        <label>
+          Campaign Brief
+          <textarea
+            rows="5"
+            value={campaignBrief}
+            onChange={(event) => setCampaignBrief(event.target.value)}
+            placeholder="Describe what FlowFit should promote..."
+          />
+        </label>
+
+        <div className="chips">
+          {PROVIDERS.map((provider) => (
+            <button
+              type="button"
+              className={selectedProviders.includes(provider.id) ? "chip selected" : "chip"}
+              key={provider.id}
+              onClick={() => toggleProvider(provider.id)}
+            >
+              {provider.label}
+            </button>
+          ))}
+        </div>
+
+        <button className="primary-button" onClick={generatePosts} disabled={generating}>
+          {generating ? "Generating..." : "Generate Platform Posts"}
+        </button>
+      </section>
+
+      <form className="panel form-stack" onSubmit={schedulePosts}>
+        <h2>Edit & Schedule</h2>
+
+        {PROVIDERS.filter((provider) => selectedProviders.includes(provider.id)).map((provider) => (
+          <label key={provider.id}>
+            {provider.label} Post
             <textarea
               rows="5"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              placeholder="Paste FlowFit user JWT here"
+              maxLength={provider.id === "X" ? 280 : 2800}
+              value={variants[provider.id] || ""}
+              onChange={(event) =>
+                setVariants((current) => ({
+                  ...current,
+                  [provider.id]: event.target.value,
+                }))
+              }
             />
+            <span className="hint">
+              {(variants[provider.id] || "").length}/{provider.id === "X" ? 280 : 2800} characters
+            </span>
           </label>
+        ))}
 
-          <button className="primary-button" onClick={persistSettings}>
-            Save Settings
+        <label>
+          Schedule Time
+          <input
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(event) => setScheduledAt(event.target.value)}
+          />
+        </label>
+
+        <label>
+          Media
+          <input
+            type="file"
+            accept="image/*,video/*"
+            multiple
+            onChange={(event) => setMediaFiles(event.target.files)}
+          />
+        </label>
+
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={uploadSelectedMedia} disabled={uploading}>
+            {uploading ? "Uploading..." : "Upload Media"}
           </button>
 
-          <div className="provider-list">
-            <h3>Provider Config</h3>
-            {PROVIDERS.map((provider) => (
-              <div className="provider-row" key={provider.id}>
-                <span>{provider.label}</span>
-                <strong className={providerStatus?.[provider.id] ? "ok" : "bad"}>
-                  {providerStatus?.[provider.id] ? "Ready" : "Not ready"}
-                </strong>
-              </div>
+          <button type="submit" className="primary-button" disabled={loading}>
+            {loading ? "Scheduling..." : "Schedule Selected Posts"}
+          </button>
+        </div>
+
+        {mediaUrls.length > 0 && (
+          <div className="media-preview">
+            <strong>Uploaded media</strong>
+            {mediaUrls.map((url) => (
+              <a href={url} target="_blank" rel="noreferrer" key={url}>
+                {url}
+              </a>
             ))}
           </div>
-        </aside>
-
-        <section className="panel">
-          <h2>Create Scheduled Post</h2>
-
-          <form onSubmit={schedulePost} className="form-stack">
-            <label>
-              Caption
-              <textarea
-                rows="7"
-                value={text}
-                maxLength={2800}
-                onChange={(event) => setText(event.target.value)}
-                placeholder="Write your marketing post..."
-              />
-              <span className="hint">{text.length}/2800 characters</span>
-            </label>
-
-            <div>
-              <p className="label-title">Platforms</p>
-              <div className="chips">
-                {PROVIDERS.map((provider) => (
-                  <button
-                    type="button"
-                    className={selectedProviders.includes(provider.id) ? "chip selected" : "chip"}
-                    key={provider.id}
-                    onClick={() => toggleProvider(provider.id)}
-                  >
-                    {provider.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <label>
-              Schedule Time
-              <input
-                type="datetime-local"
-                value={scheduledAt}
-                onChange={(event) => setScheduledAt(event.target.value)}
-              />
-            </label>
-
-            <label>
-              Media
-              <input
-                type="file"
-                accept="image/*,video/*"
-                multiple
-                onChange={(event) => setMediaFiles(event.target.files)}
-              />
-            </label>
-
-            <div className="button-row">
-              <button type="button" className="secondary-button" disabled={uploading} onClick={uploadSelectedMedia}>
-                {uploading ? "Uploading..." : "Upload Media"}
-              </button>
-
-              <button type="submit" className="primary-button" disabled={saving}>
-                {saving ? "Scheduling..." : "Schedule Post"}
-              </button>
-            </div>
-
-            {mediaUrls.length > 0 && (
-              <div className="media-preview">
-                <p>Uploaded media URLs:</p>
-                {mediaUrls.map((url) => (
-                  <a href={url} target="_blank" rel="noreferrer" key={url}>
-                    {url}
-                  </a>
-                ))}
-              </div>
-            )}
-          </form>
-        </section>
-      </section>
+        )}
+      </form>
 
       <section className="panel posts-panel">
         <div className="section-header">
           <h2>Scheduled Posts</h2>
-          <button className="secondary-button" onClick={loadPosts} disabled={loadingPosts}>
-            {loadingPosts ? "Loading..." : "Reload Posts"}
+          <button className="secondary-button" onClick={loadPosts} disabled={loading}>
+            Reload
           </button>
         </div>
 
@@ -374,7 +350,7 @@ export default function App() {
                 </div>
 
                 {["DRAFT", "SCHEDULED", "FAILED"].includes(post.status) && (
-                  <button className="danger-button" onClick={() => cancelPost(post.id)}>
+                  <button type="button" className="danger-button" onClick={() => cancelPost(post.id)}>
                     Cancel
                   </button>
                 )}
