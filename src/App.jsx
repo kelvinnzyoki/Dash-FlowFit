@@ -6,9 +6,6 @@ const API_BASE =
   (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "") ||
   "https://poster.cctamcc.site";
 
-// Optional static Bearer token (set VITE_API_TOKEN in Vercel env vars).
-// On the backend, also set POSTER_SERVICE_USER_ID so the token is accepted
-// without a full FlowFit login session.
 const STATIC_TOKEN = import.meta.env.VITE_API_TOKEN || "";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -40,6 +37,12 @@ function toDatetimeLocalValue(date = new Date(Date.now() + 10 * 60 * 1000)) {
   return new Date(date.getTime() - offset * 60_000).toISOString().slice(0, 16);
 }
 
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
 // ── API helper ────────────────────────────────────────────────────────────────
 async function apiCall(path, options = {}) {
   const headers = {
@@ -55,12 +58,10 @@ async function apiCall(path, options = {}) {
       ...options,
       headers,
     });
-  } catch (networkErr) {
-    // fetch() itself threw — server unreachable or CORS preflight blocked
+  } catch {
     throw new Error(
       "Cannot reach the backend (" + API_BASE + "). " +
-      "Check: (1) VITE_API_BASE_URL is correct, (2) backend CORS allows this origin with credentials, " +
-      "(3) POSTER_SERVICE_USER_ID is set on the backend if you are not using FlowFit login cookies."
+      "Check VITE_API_BASE_URL, backend CORS (APP_ORIGIN), and POSTER_SERVICE_USER_ID."
     );
   }
 
@@ -78,15 +79,15 @@ async function apiCall(path, options = {}) {
   return payload;
 }
 
-// ── Notice hook (auto-dismiss after 6 s) ─────────────────────────────────────
+// ── Notice hook ───────────────────────────────────────────────────────────────
 function useNotice() {
-  const [notice, setNoticeState] = useState(null); // { text, type: 'success'|'error' }
+  const [notice, setNoticeState] = useState(null);
   const timerRef = useRef(null);
 
   const setNotice = useCallback((text, type = "error") => {
     clearTimeout(timerRef.current);
     setNoticeState({ text, type });
-    timerRef.current = setTimeout(() => setNoticeState(null), 6000);
+    timerRef.current = setTimeout(() => setNoticeState(null), 7000);
   }, []);
 
   const clearNotice = useCallback(() => {
@@ -95,7 +96,6 @@ function useNotice() {
   }, []);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
-
   return { notice, setNotice, clearNotice };
 }
 
@@ -106,34 +106,37 @@ export default function App() {
   const [campaignBrief, setCampaignBrief] = useState(
     "Promote FlowFit home workouts, AI coaching, progress tracking, and real fitness results."
   );
-  const [variants, setVariants]               = useState(DEFAULT_VARIANTS);
-  const [selectedProviders, setSelectedProviders] = useState(["FACEBOOK", "INSTAGRAM", "LINKEDIN", "X"]);
-  const [scheduledAt, setScheduledAt]         = useState(() => toDatetimeLocalValue());
-  const [mediaFiles, setMediaFiles]           = useState([]);
-  const [mediaUrls, setMediaUrls]             = useState([]);
-  const [posts, setPosts]                     = useState([]);
-  const [providerStatus, setProviderStatus]   = useState({});
-  const [loading, setLoading]                 = useState(false);
-  const [generating, setGenerating]           = useState(false);
-  const [uploading, setUploading]             = useState(false);
-  const [statusFilter, setStatusFilter]       = useState("");
+  const [variants, setVariants]                     = useState(DEFAULT_VARIANTS);
+  const [selectedProviders, setSelectedProviders]   = useState(["FACEBOOK", "INSTAGRAM", "LINKEDIN", "X"]);
+  const [scheduledAt, setScheduledAt]               = useState(() => toDatetimeLocalValue());
 
-  // ── Load provider connection status ────────────────────────────────────────
+  // Media state — stored as real Array so length check is always reliable
+  const [selectedFiles, setSelectedFiles]           = useState([]); // File[] — picked but not yet uploaded
+  const [uploadedUrls, setUploadedUrls]             = useState([]); // string[] — confirmed Cloudinary URLs
+  const fileInputRef                                = useRef(null);
+
+  const [posts, setPosts]                           = useState([]);
+  const [providerStatus, setProviderStatus]         = useState({});
+  const [statusFilter, setStatusFilter]             = useState("");
+
+  const [loading, setLoading]       = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [uploading, setUploading]   = useState(false);
+
+  // ── Provider status ────────────────────────────────────────────────────────
   const loadProviderStatus = useCallback(async () => {
     try {
       const data = await apiCall("/api/social/providers");
       setProviderStatus(data.providers || {});
-    } catch {
-      // Non-fatal — providers status is informational only
-    }
+    } catch { /* non-fatal */ }
   }, []);
 
-  // ── Load posts ─────────────────────────────────────────────────────────────
+  // ── Posts ──────────────────────────────────────────────────────────────────
   const loadPosts = useCallback(async (filter) => {
     setLoading(true);
     try {
-      const query = (filter || statusFilter) ? "?status=" + (filter || statusFilter) : "";
-      const data = await apiCall("/api/social/posts" + query);
+      const q = filter !== undefined ? filter : statusFilter;
+      const data = await apiCall("/api/social/posts" + (q ? "?status=" + q : ""));
       setPosts(data.posts || []);
     } catch (err) {
       setNotice(err.message, "error");
@@ -148,17 +151,69 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Toggle platform selection ──────────────────────────────────────────────
+  // ── Providers toggle ───────────────────────────────────────────────────────
   function toggleProvider(id) {
     setSelectedProviders((cur) =>
       cur.includes(id) ? cur.filter((p) => p !== id) : [...cur, id]
     );
   }
 
-  // ── Generate via backend Groq ──────────────────────────────────────────────
+  // ── File selection ─────────────────────────────────────────────────────────
+  function onFilesChange(e) {
+    // Convert FileList → plain Array immediately so it's never stale
+    const arr = Array.from(e.target.files || []);
+    setSelectedFiles(arr);
+    // Reset uploaded URLs when a new set of files is picked
+    setUploadedUrls([]);
+  }
+
+  function removeSelectedFile(index) {
+    setSelectedFiles((cur) => cur.filter((_, i) => i !== index));
+  }
+
+  // ── Upload to Cloudinary via backend ──────────────────────────────────────
+  async function uploadMedia() {
+    if (!selectedFiles.length) {
+      setNotice("Pick at least one image or video first.", "error");
+      return;
+    }
+
+    const totalMB = selectedFiles.reduce((s, f) => s + f.size, 0) / (1024 * 1024);
+    if (totalMB > 4) {
+      setNotice(
+        "Total file size is " + totalMB.toFixed(1) + " MB. Keep it under 4 MB (Vercel limit). " +
+        "Compress images or upload one at a time.",
+        "error"
+      );
+      return;
+    }
+
+    const form = new FormData();
+    selectedFiles.forEach((f) => form.append("media", f));
+
+    setUploading(true);
+    try {
+      const data = await apiCall("/api/social/media", { method: "POST", body: form });
+      const urls = data.urls || [];
+      setUploadedUrls(urls);
+      setNotice(urls.length + " file(s) uploaded to Cloudinary.", "success");
+    } catch (err) {
+      setNotice(err.message, "error");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function clearMedia() {
+    setSelectedFiles([]);
+    setUploadedUrls([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  // ── Generate posts ─────────────────────────────────────────────────────────
   async function generatePosts() {
     if (!campaignBrief.trim()) {
-      setNotice("Add a campaign brief first.", "error");
+      setNotice("Write a campaign brief first.", "error");
       return;
     }
     if (!selectedProviders.length) {
@@ -178,33 +233,11 @@ export default function App() {
       }
 
       setVariants((cur) => ({ ...cur, ...data.variants }));
-      setNotice("AI posts generated — review and edit each platform below.", "success");
+      setNotice("Posts generated — review and edit below.", "success");
     } catch (err) {
       setNotice(err.message, "error");
     } finally {
       setGenerating(false);
-    }
-  }
-
-  // ── Upload media ───────────────────────────────────────────────────────────
-  async function uploadSelectedMedia() {
-    if (!mediaFiles.length) {
-      setNotice("Select at least one file first.", "error");
-      return;
-    }
-
-    const form = new FormData();
-    Array.from(mediaFiles).forEach((f) => form.append("media", f));
-
-    setUploading(true);
-    try {
-      const data = await apiCall("/api/social/media", { method: "POST", body: form });
-      setMediaUrls(data.urls || []);
-      setNotice("Media uploaded successfully.", "success");
-    } catch (err) {
-      setNotice(err.message, "error");
-    } finally {
-      setUploading(false);
     }
   }
 
@@ -216,50 +249,55 @@ export default function App() {
       setNotice("Select at least one platform.", "error");
       return;
     }
-    if (selectedProviders.includes("INSTAGRAM") && !mediaUrls.length) {
+    if (selectedProviders.includes("INSTAGRAM") && !uploadedUrls.length) {
       setNotice("Instagram requires at least one uploaded media URL.", "error");
       return;
     }
-    const scheduledISO = new Date(scheduledAt).toISOString();
     if (new Date(scheduledAt) < new Date(Date.now() - 60_000)) {
       setNotice("Schedule time must be now or in the future.", "error");
       return;
     }
+    if (selectedFiles.length && !uploadedUrls.length) {
+      setNotice("You have files selected but not uploaded yet. Click 'Upload to Cloudinary' first.", "error");
+      return;
+    }
 
     setLoading(true);
-    let successCount = 0;
+    let ok = 0;
     const errors = [];
 
-    try {
-      for (const provider of selectedProviders) {
-        const text = (variants[provider] || "").trim();
-        if (!text) { errors.push(provider + " post text is empty."); continue; }
+    for (const provider of selectedProviders) {
+      const text = (variants[provider] || "").trim();
+      if (!text) { errors.push(provider + " post text is empty."); continue; }
 
-        try {
-          await apiCall("/api/social/posts", {
-            method: "POST",
-            body: JSON.stringify({ text, providers: [provider], scheduledAt: scheduledISO, mediaUrls }),
-          });
-          successCount++;
-        } catch (err) {
-          errors.push(provider + ": " + err.message);
-        }
+      try {
+        await apiCall("/api/social/posts", {
+          method: "POST",
+          body: JSON.stringify({
+            text,
+            providers: [provider],
+            scheduledAt: new Date(scheduledAt).toISOString(),
+            mediaUrls: uploadedUrls,
+          }),
+        });
+        ok++;
+      } catch (err) {
+        errors.push(provider + ": " + err.message);
       }
+    }
 
-      if (successCount > 0) {
-        setNotice(
-          successCount + " post(s) scheduled." + (errors.length ? " Errors: " + errors.join("; ") : ""),
-          errors.length ? "error" : "success"
-        );
-        setMediaFiles([]);
-        setMediaUrls([]);
-        setScheduledAt(toDatetimeLocalValue());
-        await loadPosts("");
-      } else {
-        setNotice(errors.join(" | "), "error");
-      }
-    } finally {
-      setLoading(false);
+    setLoading(false);
+
+    if (ok > 0) {
+      setNotice(
+        ok + " post(s) scheduled." + (errors.length ? " Errors: " + errors.join("; ") : ""),
+        errors.length ? "error" : "success"
+      );
+      clearMedia();
+      setScheduledAt(toDatetimeLocalValue());
+      await loadPosts("");
+    } else {
+      setNotice(errors.join(" | "), "error");
     }
   }
 
@@ -274,17 +312,22 @@ export default function App() {
     }
   }
 
-  // ── Status filter ──────────────────────────────────────────────────────────
   function applyFilter(value) {
     setStatusFilter(value);
     loadPosts(value);
   }
 
-  // ── Connected provider count ───────────────────────────────────────────────
   const connectedCount = useMemo(
     () => Object.values(providerStatus).filter(Boolean).length,
     [providerStatus]
   );
+
+  const totalSelectedMB = useMemo(
+    () => selectedFiles.reduce((s, f) => s + f.size, 0) / (1024 * 1024),
+    [selectedFiles]
+  );
+
+  const needsMedia = selectedProviders.includes("INSTAGRAM");
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -295,8 +338,8 @@ export default function App() {
         <p className="eyebrow">FlowFit Marketing</p>
         <h1>Social Poster</h1>
         <p className="hero-copy">
-          Generate platform-specific posts with AI, upload media, schedule campaigns,
-          and let the backend cron publish due posts automatically.
+          Generate AI posts per platform, upload media, schedule campaigns,
+          and let the backend cron publish them automatically.
         </p>
         <p className="api-base-badge">API → {API_BASE}</p>
       </section>
@@ -305,11 +348,11 @@ export default function App() {
       {notice && (
         <div className={"notice notice--" + notice.type} role="status">
           <span>{notice.text}</span>
-          <button className="notice-close" onClick={clearNotice} aria-label="Dismiss">✕</button>
+          <button className="notice-close" onClick={clearNotice}>✕</button>
         </div>
       )}
 
-      {/* Provider status */}
+      {/* Provider connection status */}
       <section className="panel provider-panel">
         <div className="section-header">
           <h2>Platform Connections</h2>
@@ -344,7 +387,7 @@ export default function App() {
           />
         </label>
 
-        <p className="sub-label">Select platforms to generate for:</p>
+        <p className="sub-label" style={{ marginTop: 14 }}>Generate for platforms:</p>
         <div className="chips">
           {PROVIDERS.map((p) => (
             <button
@@ -363,29 +406,105 @@ export default function App() {
         </button>
       </section>
 
+      {/* Media upload — standalone section, before the schedule form */}
+      <section className="panel media-panel">
+        <h2>
+          Media Upload
+          {needsMedia && <span className="required-tag">Required for Instagram</span>}
+        </h2>
+        <p className="hint" style={{ marginBottom: 14 }}>
+          Upload images or videos to Cloudinary first. The URLs are then attached to all scheduled posts.
+          Max total size: 4 MB (Vercel limit).
+        </p>
+
+        {/* File picker */}
+        <div className="file-picker-row">
+          <label className="file-picker-label" htmlFor="media-input">
+            {selectedFiles.length
+              ? selectedFiles.length + " file(s) selected — " + totalSelectedMB.toFixed(2) + " MB"
+              : "Click to pick images or videos"}
+          </label>
+          <input
+            id="media-input"
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*"
+            multiple
+            className="file-input-hidden"
+            onChange={onFilesChange}
+          />
+        </div>
+
+        {/* Selected file list */}
+        {selectedFiles.length > 0 && (
+          <ul className="file-list">
+            {selectedFiles.map((f, i) => (
+              <li key={i} className="file-item">
+                <span className="file-name">{f.name}</span>
+                <span className="file-size">{formatBytes(f.size)}</span>
+                <button
+                  type="button"
+                  className="file-remove"
+                  onClick={() => removeSelectedFile(i)}
+                  aria-label={"Remove " + f.name}
+                >✕</button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {totalSelectedMB > 4 && (
+          <p className="warn-text">⚠ Total exceeds 4 MB — upload will fail. Remove some files.</p>
+        )}
+
+        <div className="button-row" style={{ marginTop: 14 }}>
+          {selectedFiles.length > 0 && (
+            <button type="button" className="secondary-button" onClick={clearMedia}>
+              Clear
+            </button>
+          )}
+          <button
+            type="button"
+            className="primary-button"
+            onClick={uploadMedia}
+            disabled={uploading || !selectedFiles.length || totalSelectedMB > 4}
+          >
+            {uploading ? "Uploading…" : "Upload to Cloudinary"}
+          </button>
+        </div>
+
+        {/* Uploaded URLs */}
+        {uploadedUrls.length > 0 && (
+          <div className="media-preview">
+            <strong>✓ Uploaded — {uploadedUrls.length} URL(s) ready</strong>
+            {uploadedUrls.map((url) => (
+              <a href={url} target="_blank" rel="noreferrer" key={url}>{url}</a>
+            ))}
+          </div>
+        )}
+      </section>
+
       {/* Edit & Schedule */}
       <form className="panel form-stack" onSubmit={schedulePosts}>
-        <h2>Edit & Schedule</h2>
+        <h2>Edit &amp; Schedule</h2>
 
         {PROVIDERS.filter((p) => selectedProviders.includes(p.id)).map((p) => (
           <div key={p.id} className="variant-block">
-            <label className="variant-label">
-              {p.label}
+            <div className="variant-label">
+              <span>{p.label}</span>
               {providerStatus[p.id] === false && (
                 <span className="not-connected-tag">not connected</span>
               )}
-            </label>
+            </div>
             <textarea
               rows="5"
               maxLength={p.limit}
               value={variants[p.id] || ""}
-              onChange={(e) =>
-                setVariants((cur) => ({ ...cur, [p.id]: e.target.value }))
-              }
+              onChange={(e) => setVariants((cur) => ({ ...cur, [p.id]: e.target.value }))}
               placeholder={"Write your " + p.label + " post here…"}
             />
             <span className={"hint char-count" + ((variants[p.id] || "").length >= p.limit ? " over" : "")}>
-              {(variants[p.id] || "").length} / {p.limit} characters
+              {(variants[p.id] || "").length} / {p.limit}
             </span>
           </div>
         ))}
@@ -399,45 +518,35 @@ export default function App() {
           />
         </label>
 
-        <div className="media-section">
-          <label>
-            Media (images / videos — optional except Instagram)
-            <input
-              type="file"
-              accept="image/*,video/*"
-              multiple
-              onChange={(e) => setMediaFiles(e.target.files)}
-            />
-          </label>
-          <button type="button" className="secondary-button" onClick={uploadSelectedMedia} disabled={uploading}>
-            {uploading ? "Uploading…" : "Upload Media to Cloudinary"}
-          </button>
-        </div>
+        {uploadedUrls.length > 0 && (
+          <p className="hint" style={{ color: "#15803d" }}>
+            ✓ {uploadedUrls.length} media URL(s) will be attached to all posts.
+          </p>
+        )}
 
-        {mediaUrls.length > 0 && (
-          <div className="media-preview">
-            <strong>Uploaded URLs</strong>
-            {mediaUrls.map((url) => (
-              <a href={url} target="_blank" rel="noreferrer" key={url}>{url}</a>
-            ))}
-          </div>
+        {needsMedia && !uploadedUrls.length && (
+          <p className="warn-text">⚠ Instagram is selected but no media uploaded yet.</p>
         )}
 
         <div className="button-row">
           <button
             type="button"
             className="secondary-button"
-            onClick={() => { setVariants(DEFAULT_VARIANTS); setNotice("Variants reset to defaults.", "success"); }}
+            onClick={() => { setVariants(DEFAULT_VARIANTS); setNotice("Variants reset.", "success"); }}
           >
             Reset Posts
           </button>
-          <button type="submit" className="primary-button" disabled={loading || !selectedProviders.length}>
-            {loading ? "Scheduling…" : "Schedule Selected Posts"}
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={loading || !selectedProviders.length}
+          >
+            {loading ? "Scheduling…" : "Schedule Posts"}
           </button>
         </div>
       </form>
 
-      {/* Scheduled Posts */}
+      {/* Scheduled posts list */}
       <section className="panel posts-panel">
         <div className="section-header">
           <h2>Scheduled Posts</h2>
@@ -459,7 +568,7 @@ export default function App() {
         </div>
 
         {posts.length === 0 ? (
-          <p className="empty">No posts found{statusFilter ? " for status: " + statusFilter : ""}.</p>
+          <p className="empty">No posts found{statusFilter ? " for " + statusFilter : ""}.</p>
         ) : (
           <div className="post-list">
             {posts.map((post) => {
@@ -468,8 +577,7 @@ export default function App() {
                 <article className="post-card" key={post.id}>
                   <div className="post-top">
                     <span className="status-badge" style={{
-                      background: style.bg,
-                      color: style.color,
+                      background: style.bg, color: style.color,
                       border: "1px solid " + style.border,
                     }}>
                       {post.status}
@@ -490,9 +598,7 @@ export default function App() {
                     )}
                   </div>
 
-                  {post.lastError && (
-                    <p className="error-text">⚠ {post.lastError}</p>
-                  )}
+                  {post.lastError && <p className="error-text">⚠ {post.lastError}</p>}
 
                   {["DRAFT","SCHEDULED","FAILED"].includes(post.status) && (
                     <button type="button" className="danger-button" onClick={() => cancelPost(post.id)}>
